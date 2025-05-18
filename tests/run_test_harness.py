@@ -4,8 +4,10 @@ import re
 import subprocess
 import multiprocessing
 
+# 学生实现的代码，编译后的二进制程序名字
 STUDENT_BINARY_NAME = "runtasks"
 
+# 各个硬件平台实现的代码，编译出的二进制程序名字 (这个部分应该是开发测试的时候遗留下来的代码)
 if platform.system() == 'Darwin':
     if platform.machine() == "arm64":
         REFERENCE_BINARY_NAME = "runtasks_ref_osx_arm"
@@ -17,6 +19,7 @@ else:
     else:
         REFERENCE_BINARY_NAME = "runtasks_ref_linux"
 
+# 重置 REFERENCE_BINARY_NAME 为 "runtasks_ref", 后续根据 platform.system() 返回值和不同的字符串拼接，运行不同的测试用例
 REFERENCE_BINARY_NAME = "runtasks_ref"
 print(REFERENCE_BINARY_NAME)
 print(platform.system(), platform.machine())
@@ -114,20 +117,26 @@ def pretty_print_with_comparison(test_name, runtimes, perf_threshold, impl_perf_
 
 if __name__ == '__main__':
 
+    # 设置脚本的功能描述
     parser = argparse.ArgumentParser(description='Run task system performance tests')
     
+    # 设置 --num_threads 参数，表示运行的线程数目
     parser.add_argument('-n', '--num_threads', type=int,
                         default=TASKSYS_DEFAULT_NUM_THREADS,
                         help="Max number of threads that the task system can use. (%d by default)" % TASKSYS_DEFAULT_NUM_THREADS)
+    # 设置 --test_names 参数，表示要运行的测试
     parser.add_argument('-t', '--test_names', type=str, nargs='+',
                         default=[x[0] for x in LIST_OF_TESTS],
                         help='List of tests to run: %s' % ", ".join([
                             x[0] for x in LIST_OF_TESTS]))
+    # 设置 --run_async 参数，表示是否运行异步测试
     parser.add_argument('-a', '--run_async', action='store_true',
                         help='Run async tests')
 
+    # 解析命令行参数
     args = parser.parse_args()
 
+    # 设置每个测试要运行的线程数目 ------------------------------------------------------------------------- start
     test_names_and_num_threads = []
 
     # Some tests directly specify the number of threads the task system should use. 
@@ -143,6 +152,7 @@ if __name__ == '__main__':
         test_names_and_num_threads.append( (x[0], num_threads) )
         if args.run_async:
             test_names_and_num_threads.append( (x[0] + "_async", num_threads) )
+    # 设置每个测试要运行的线程数目 ------------------------------------------------------------------------- end
 
     print("==============================================================="
           "=================")
@@ -155,6 +165,7 @@ if __name__ == '__main__':
     runtimes_of_test = {}
     impl_perf_ok = {impl: True for impl in LIST_OF_IMPLEMENTATIONS}
 
+    # 设置所有测试 ---------------------------------------------------------------------------------------- start
     # run all tests
     for (test_name, num_threads) in test_names_and_num_threads:
         
@@ -183,6 +194,7 @@ if __name__ == '__main__':
         cmds = [ref_cmd, student_cmd]
         is_references = [True, False]
         all_runtimes = {}
+        # 运行 NUM_TEST_RUNS 次测试，分别取最快的一次作为 ref 的值，以及 student 的值
         for i in range(NUM_TEST_RUNS):
             for (cmd, is_reference) in zip(cmds, is_references):
                 cmd = "%s %s" % (cmd, test_name)
@@ -193,9 +205,11 @@ if __name__ == '__main__':
                     all_runtimes[key] += runtimes[key]
         for key in all_runtimes:
             all_runtimes[key] = min(all_runtimes[key])
+        # 只要学生的实现在参考实现的 PERF_THRESHOLD倍 以内，就合格 (这里是1.2倍)
         pretty_print_with_comparison(test_name, all_runtimes, PERF_THRESHOLD, impl_perf_ok)
         
         runtimes_of_test[test_name] = all_runtimes
+    # 设置所有测试 ---------------------------------------------------------------------------------------- end
 
     # Compare student's implementation against reference
     print("==============================================================="
