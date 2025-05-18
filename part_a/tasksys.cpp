@@ -137,6 +137,14 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
     return "Parallel + Thread Pool + Spin";
 }
 
+// 您在步骤1中的实现会因为每次调用run()时创建线程而产生开销。当任务计算量较小时，这种开销尤为明显。
+// 此时，我们建议您转向"线程池"实现，即您的任务执行系统预先创建所有工作线程（例如在TaskSystem构造期间，
+// 或在首次调用run()时）。
+
+// 作为初始实现，我们建议您设计工作线程持续循环，始终检查是否有更多工作需要执行（线程进入while循环直到
+// 条件满足，这通常被称为"自旋"）。工作线程如何判断是否有工作需要做？这个属于任务动态分配   
+
+// 现在要确保run()实现所需的同步行为已非易事。您需要如何改变run()的实现来确定批量任务启动中的所有任务已完成？
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
     //
     // TODO: CS149 student implementations may decide to perform setup
@@ -144,21 +152,54 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    // 创建线程池
+    this->thread_num = num_threads;
+    this->thread_pool = new std::thread[this->thread_num];
+    this->cur_task_id = 0;
 }
 
-TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {}
+TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    // 销毁线程池
+    this->thread_num = -1;
+    delete[] this->thread_pool;
+    this->thread_pool = nullptr;
+    this->cur_task_id = -1;
+}
+
+void TaskSystemParallelThreadPoolSpinning::runThread(IRunnable *runnable, TaskSystemParallelThreadPoolSpinning *obj, int num_total_tasks) {
+    // 循环直到没有任务可执行(counter < num_total_tasks):
+    //      1.获取 counter 的锁
+    //      2.使用 counter 获取 task_id
+    //      3.task_id++
+    //      4.释放 counter 的锁
+    //      5.执行 task_id 代表的任务
+    int cur_task_id = -1;
+    while(obj->cur_task_id < num_total_tasks) {
+        obj->task_id_mtx.lock();
+        cur_task_id = obj->cur_task_id;
+        obj->cur_task_id++;
+        obj->task_id_mtx.unlock();
+        if(cur_task_id >= num_total_tasks) {
+            break;
+        }
+        runnable->runTask(cur_task_id, num_total_tasks);
+    }
+}
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
-
-
     //
     // TODO: CS149 students will modify the implementation of this
     // method in Part A.  The implementation provided below runs all
     // tasks sequentially on the calling thread.
     //
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    // 这里采用动态任务分配
+    this->cur_task_id = 0;
+    for (int i = 0; i < this->thread_num; i++) {
+        this->thread_pool[i] = std::thread(runThread, runnable, this, num_total_tasks);
+    }
+    // 等待线程结束 (不一定所有线程都分配到了任务)
+    for (int i = 0; i < this->thread_num; i++) {
+        this->thread_pool[i].join();
     }
 }
 
