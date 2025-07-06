@@ -43,6 +43,14 @@ class TaskSystemParallelSpawn: public ITaskSystem {
         std::thread *thread_pool = nullptr;
 };
 
+class Worker {
+    public:
+        IRunnable *runnable = nullptr;
+        int num_total_tasks = -1;
+        int thread_id = -1;
+        bool enable = false;
+        std::mutex worker_lock;
+};
 /*
  * TaskSystemParallelThreadPoolSpinning: This class is the student's
  * implementation of a parallel task execution engine that uses a
@@ -58,12 +66,13 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
-        static void runThread(IRunnable *runnable, TaskSystemParallelThreadPoolSpinning *obj, int num_total_tasks);
+        static void runThread(Worker *worker, TaskSystemParallelThreadPoolSpinning *obj);
     private:
         int thread_num = -1;
         std::thread *thread_pool = nullptr;
         int cur_task_id = -1;
         std::mutex task_id_mtx;
+        Worker *workers = nullptr;
 };
 
 /*

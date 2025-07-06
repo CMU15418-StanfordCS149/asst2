@@ -156,34 +156,66 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     this->thread_num = num_threads;
     this->thread_pool = new std::thread[this->thread_num];
     this->cur_task_id = 0;
+    // 创建任务池
+    this->workers = new Worker[this->thread_num];
+    for (int i = 0; i < this->thread_num; i++) {
+        workers[i].runnable = nullptr;
+        workers[i].num_total_tasks = -1;
+        workers[i].thread_id = i;
+        workers[i].enable = false;
+        this->thread_pool[i] = std::thread(runThread, &(workers[i]), this);
+    }
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
     // 销毁线程池
-    this->thread_num = -1;
     delete[] this->thread_pool;
-    this->thread_pool = nullptr;
-    this->cur_task_id = -1;
+    // 销毁任务池
+    delete[] this->workers;
 }
 
-void TaskSystemParallelThreadPoolSpinning::runThread(IRunnable *runnable, TaskSystemParallelThreadPoolSpinning *obj, int num_total_tasks) {
-    // 循环直到没有任务可执行(counter < num_total_tasks):
-    //      1.获取 counter 的锁
-    //      2.使用 counter 获取 task_id
-    //      3.task_id++
-    //      4.释放 counter 的锁
-    //      5.执行 task_id 代表的任务
-    int cur_task_id = -1;
-    while(obj->cur_task_id < num_total_tasks) {
-        obj->task_id_mtx.lock();
-        cur_task_id = obj->cur_task_id;
-        obj->cur_task_id++;
-        obj->task_id_mtx.unlock();
-        if(cur_task_id >= num_total_tasks) {
-            break;
+void TaskSystemParallelThreadPoolSpinning::runThread(Worker *worker, TaskSystemParallelThreadPoolSpinning *obj) {
+    try {
+        // 等待 enable
+        while(true) {
+            worker->worker_lock.lock();
+            if(worker->enable) {
+                worker->worker_lock.unlock();
+                break;
+            }
+            worker->worker_lock.unlock();
         }
-        runnable->runTask(cur_task_id, num_total_tasks);
+
+        // 循环直到没有任务可执行(counter < num_total_tasks):
+        //      1.获取 counter 的锁
+        //      2.使用 counter 获取 task_id
+        //      3.task_id++
+        //      4.释放 counter 的锁
+        //      5.执行 task_id 代表的任务
+        int cur_task_id = -1;
+        while(cur_task_id < worker->num_total_tasks) {
+            obj->task_id_mtx.lock();
+            cur_task_id = obj->cur_task_id;
+            obj->cur_task_id++;
+            obj->task_id_mtx.unlock();
+            if(cur_task_id >= worker->num_total_tasks) {
+                break;
+            }
+            fprintf(stderr, "%d\t cur_task_id = %d, num_total_tasks = %d, worker->runnable->runTask = %p\n", 
+                cur_task_id, cur_task_id, worker->num_total_tasks, worker->runnable);
+            assert(worker->runnable);
+            worker->runnable->runTask(cur_task_id, worker->num_total_tasks);
+        }
     }
+    catch (const std::invalid_argument& e) {
+        // 捕获特定异常
+        std::cerr << "无效参数错误: " << e.what() << std::endl;
+    }
+    catch (const std::exception& e) {
+        // 捕获所有标准异常
+        std::cerr << "标准异常: " << e.what() << std::endl;
+    }
+
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
@@ -192,11 +224,16 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     // method in Part A.  The implementation provided below runs all
     // tasks sequentially on the calling thread.
     //
-    // 这里采用动态任务分配
     this->cur_task_id = 0;
-    for (int i = 0; i < this->thread_num; i++) {
-        this->thread_pool[i] = std::thread(runThread, runnable, this, num_total_tasks);
+    for(int i = 0; i < this->thread_num; i++) {
+        this->workers[i].runnable = runnable;
+        this->workers[i].num_total_tasks = num_total_tasks;
+        this->workers[i].worker_lock.lock();
+        this->workers[i].enable = true;
+        this->workers[i].worker_lock.unlock();
     }
+
+    // 这里需要让主线程睡眠或等待其它线程完成，否则 run 一返回就会判定并行任务结束，随后退出调用析构函数
     // 等待线程结束 (不一定所有线程都分配到了任务)
     for (int i = 0; i < this->thread_num; i++) {
         this->thread_pool[i].join();
