@@ -5,6 +5,7 @@
 
 #include <thread>
 #include <mutex>
+#include <atomic>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -43,14 +44,6 @@ class TaskSystemParallelSpawn: public ITaskSystem {
         std::thread *thread_pool = nullptr;
 };
 
-class Worker {
-    public:
-        IRunnable *runnable = nullptr;
-        int num_total_tasks = -1;
-        int thread_id = -1;
-        bool enable = false;
-        std::mutex worker_lock;
-};
 /*
  * TaskSystemParallelThreadPoolSpinning: This class is the student's
  * implementation of a parallel task execution engine that uses a
@@ -66,13 +59,25 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
-        static void runThread(Worker *worker, TaskSystemParallelThreadPoolSpinning *obj);
+        static void runThread(IRunnable *runnable, int task_id_start, int task_num, int num_total_tasks); 
+        void worker(int thread_id); 
     private:
-        int thread_num = -1;
-        std::thread *thread_pool = nullptr;
-        int cur_task_id = -1;
-        std::mutex task_id_mtx;
-        Worker *workers = nullptr;
+        // 总线程数 (构造函数设置好，无需锁)
+        int thread_num;
+        // 线程池指针 (构造函数设置好，无需锁)
+        std::thread *thread_pool;
+        // 当前要执行的任务 (共享变量，但写稀少，读多次，一般不加同步)
+        IRunnable *runnable;
+        // 任务总量 (共享变量，但写稀少，读多次，一般不加同步)
+        int num_total_tasks;
+        // 正在工作的 workers
+        int num_working_workers;
+        // 已完成的任务量，这里使用 finished_tasks_num 而非 cur_task_id 的原因是：cur_task_id 无法表述已完成的任务数，在并行场景下无法让 run 判断何时该返回
+        int finished_tasks_num;
+        // 同步锁
+        std::mutex compare_lock;
+        // 表示是否要销毁线程，用于通知 worker 退出 (共享变量，但写两次，读多次，一般不用加同步)
+        bool stop;
 };
 
 /*

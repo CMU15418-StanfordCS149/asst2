@@ -145,6 +145,8 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
 // 条件满足，这通常被称为"自旋"）。工作线程如何判断是否有工作需要做？这个属于任务动态分配   
 
 // 现在要确保run()实现所需的同步行为已非易事。您需要如何改变run()的实现来确定批量任务启动中的所有任务已完成？
+
+// -------- checked
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
     //
     // TODO: CS149 student implementations may decide to perform setup
@@ -155,67 +157,80 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // 创建线程池
     this->thread_num = num_threads;
     this->thread_pool = new std::thread[this->thread_num];
-    this->cur_task_id = 0;
-    // 创建任务池
-    this->workers = new Worker[this->thread_num];
+    // NOTE: 除了线程以外的成员变量必须在创建线程池之前初始化，否则 worker 可能会使用随机初始值执行一些指令
+    // 初始设置 stop 为 false
+    this->stop = false;
+    // 初始任务设置为 NULL，任务数量设置为 0, 正在工作的 workers = 0
+    this->runnable = nullptr;
+    this->num_total_tasks = 0;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
+    // 分配 worker，worker != 任务，worker 可以持续执行不同的任务，直到用户决定停止
     for (int i = 0; i < this->thread_num; i++) {
-        workers[i].runnable = nullptr;
-        workers[i].num_total_tasks = -1;
-        workers[i].thread_id = i;
-        workers[i].enable = false;
-        this->thread_pool[i] = std::thread(runThread, &(workers[i]), this);
+        this->thread_pool[i] = std::thread([this, i]() {
+            worker(i);
+        });
     }
 }
 
+// -------- checking
+void TaskSystemParallelThreadPoolSpinning::worker(int thread_id) {
+    // 只要 stop 不为 true, worker 永不停止  
+    while(!this->stop) {
+        // NOTE: 这里 runnable 充当了一个 “开始键”
+        this->compare_lock.lock();
+        if(!this->runnable) {
+            this->compare_lock.unlock();
+            std::this_thread::yield(); // 让出 CPU 时间片，减少自旋等待
+            continue;
+        }
+        // 下面这个循环一直持续到把所有任务完成为止
+        while(this->finished_tasks_num < this->num_total_tasks) {
+            if(this->finished_tasks_num + this->num_working_workers >= this->num_total_tasks)
+                break;
+            int cur_task_id = this->finished_tasks_num + this->num_working_workers;
+            this->num_working_workers++;
+            // fprintf(stderr, "after++, thread_id = %d, num_working_workers = %d, finished_tasks_num = %d, total_tasks = %d\n", 
+            //     thread_id, this->num_working_workers, this->finished_tasks_num, this->num_total_tasks);
+            assert(this->num_working_workers <= this->thread_num);
+            this->compare_lock.unlock();
+            runThread(this->runnable, cur_task_id, 1, this->num_total_tasks);
+            this->compare_lock.lock();
+            this->finished_tasks_num++;
+            this->num_working_workers--;
+            // fprintf(stderr, "after--, thread_id = %d, num_working_workers = %d, finished_tasks_num = %d, total_tasks = %d\n", 
+            //     thread_id, this->num_working_workers, this->finished_tasks_num, this->num_total_tasks);
+        }
+        this->compare_lock.unlock();
+        std::this_thread::yield(); // 让出 CPU 时间片，减少自旋
+    }
+}
+
+// 执行到这里说明前面调用的 run() 已经退出，而 run 只有在 workers 结束才能退出
+// 所以这里假设 worker 已完成所有任务
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    // 要退出，设置 stop 为 true 通知 worker 退出
+    this->stop = true;
+    std::this_thread::yield(); // 让出 CPU 时间片，等待 workers 结束
+    // join 必须放在这里，因为线程池实现中，run() 会被调用很多遍，而构造函数和析构函数可能只会被调用一遍
+    for (int i = 0; i < this->thread_num; i++) {
+        this->thread_pool[i].join();
+    }
     // 销毁线程池
+    this->thread_num = -1;
     delete[] this->thread_pool;
-    // 销毁任务池
-    delete[] this->workers;
+    this->thread_pool = nullptr;
+    // 任务设置为空，任务数量设置为 0，正在工作的 workers = 0
+    this->runnable = nullptr;
+    this->num_total_tasks = 0;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
 }
 
-void TaskSystemParallelThreadPoolSpinning::runThread(Worker *worker, TaskSystemParallelThreadPoolSpinning *obj) {
-    try {
-        // 等待 enable
-        while(true) {
-            worker->worker_lock.lock();
-            if(worker->enable) {
-                worker->worker_lock.unlock();
-                break;
-            }
-            worker->worker_lock.unlock();
-        }
-
-        // 循环直到没有任务可执行(counter < num_total_tasks):
-        //      1.获取 counter 的锁
-        //      2.使用 counter 获取 task_id
-        //      3.task_id++
-        //      4.释放 counter 的锁
-        //      5.执行 task_id 代表的任务
-        int cur_task_id = -1;
-        while(cur_task_id < worker->num_total_tasks) {
-            obj->task_id_mtx.lock();
-            cur_task_id = obj->cur_task_id;
-            obj->cur_task_id++;
-            obj->task_id_mtx.unlock();
-            if(cur_task_id >= worker->num_total_tasks) {
-                break;
-            }
-            fprintf(stderr, "%d\t cur_task_id = %d, num_total_tasks = %d, worker->runnable->runTask = %p\n", 
-                cur_task_id, cur_task_id, worker->num_total_tasks, worker->runnable);
-            assert(worker->runnable);
-            worker->runnable->runTask(cur_task_id, worker->num_total_tasks);
-        }
+void TaskSystemParallelThreadPoolSpinning::runThread(IRunnable *runnable, int task_id_start, int task_num, int num_total_tasks) {
+    for(int i = 0; i < task_num; i++) {
+        runnable->runTask(task_id_start + i, num_total_tasks);
     }
-    catch (const std::invalid_argument& e) {
-        // 捕获特定异常
-        std::cerr << "无效参数错误: " << e.what() << std::endl;
-    }
-    catch (const std::exception& e) {
-        // 捕获所有标准异常
-        std::cerr << "标准异常: " << e.what() << std::endl;
-    }
-
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
@@ -224,20 +239,30 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     // method in Part A.  The implementation provided below runs all
     // tasks sequentially on the calling thread.
     //
-    this->cur_task_id = 0;
-    for(int i = 0; i < this->thread_num; i++) {
-        this->workers[i].runnable = runnable;
-        this->workers[i].num_total_tasks = num_total_tasks;
-        this->workers[i].worker_lock.lock();
-        this->workers[i].enable = true;
-        this->workers[i].worker_lock.unlock();
-    }
+    // 初始化并行任务所需参数，包括正在工作的workers数目，任务函数 runnable，任务总量
+    // NOTE: run() 要等待 worker 执行完毕才可返回
+    this->compare_lock.lock();
+    // static int runcount = 0;
+    // runcount++;
+    // fprintf(stderr, "runcount = %d, num_total_tasks = %d\n", runcount, num_total_tasks);
+    this->num_total_tasks = num_total_tasks;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
+    this->runnable = runnable;
+    this->compare_lock.unlock();
 
-    // 这里需要让主线程睡眠或等待其它线程完成，否则 run 一返回就会判定并行任务结束，随后退出调用析构函数
-    // 等待线程结束 (不一定所有线程都分配到了任务)
-    for (int i = 0; i < this->thread_num; i++) {
-        this->thread_pool[i].join();
+    while(this->finished_tasks_num < num_total_tasks) {
+        std::this_thread::yield(); // 让出 CPU 时间片，减少自旋等待
     }
+    assert(this->finished_tasks_num == num_total_tasks);
+    // 这次run结束后，重置任务设置为空，任务数量设置为 0，正在工作的 workers = 0
+    this->compare_lock.lock();
+    this->runnable = nullptr;
+    this->num_total_tasks = 0;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
+    this->compare_lock.unlock();
+
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
