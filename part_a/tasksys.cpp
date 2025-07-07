@@ -190,16 +190,12 @@ void TaskSystemParallelThreadPoolSpinning::worker(int thread_id) {
                 break;
             int cur_task_id = this->finished_tasks_num + this->num_working_workers;
             this->num_working_workers++;
-            // fprintf(stderr, "after++, thread_id = %d, num_working_workers = %d, finished_tasks_num = %d, total_tasks = %d\n", 
-            //     thread_id, this->num_working_workers, this->finished_tasks_num, this->num_total_tasks);
             assert(this->num_working_workers <= this->thread_num);
             this->compare_lock.unlock();
             runThread(this->runnable, cur_task_id, 1, this->num_total_tasks);
             this->compare_lock.lock();
             this->finished_tasks_num++;
             this->num_working_workers--;
-            // fprintf(stderr, "after--, thread_id = %d, num_working_workers = %d, finished_tasks_num = %d, total_tasks = %d\n", 
-            //     thread_id, this->num_working_workers, this->finished_tasks_num, this->num_total_tasks);
         }
         this->compare_lock.unlock();
         std::this_thread::yield(); // 让出 CPU 时间片，减少自旋
@@ -242,9 +238,6 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     // 初始化并行任务所需参数，包括正在工作的workers数目，任务函数 runnable，任务总量
     // NOTE: run() 要等待 worker 执行完毕才可返回
     this->compare_lock.lock();
-    // static int runcount = 0;
-    // runcount++;
-    // fprintf(stderr, "runcount = %d, num_total_tasks = %d\n", runcount, num_total_tasks);
     this->num_total_tasks = num_total_tasks;
     this->finished_tasks_num = 0;
     this->num_working_workers = 0;
