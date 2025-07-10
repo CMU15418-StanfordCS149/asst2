@@ -111,16 +111,15 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         int num_working_workers;
         // 已完成的任务量，这里使用 finished_tasks_num 而非 cur_task_id 的原因是：cur_task_id 无法表述已完成的任务数，在并行场景下无法让 run 判断何时该返回
         int finished_tasks_num;
-        // 同步锁
-        std::mutex compare_lock;
         // 表示是否要销毁线程，用于通知 worker 退出 (共享变量，但写两次，读多次，一般不用加同步)
-        bool stop;
+        std::atomic<bool> stop;
         // 活着的 worker 数量，供析构函数决定什么时候解除睡眠
         std::atomic<int> alive_workers; 
-        // stop_cv 用于控制析构函数的条件变量
-        std::condition_variable stop_cv;
-        // stop_lock 适配 stop_cv 的互斥锁
-        std::mutex stop_lock;
+        // run_cv 调用 run() 的线程在给所有 workers 分配任务后要进入睡眠，因此需要 cv
+        // + workers 也可以使用 run_cv 进入睡眠状态
+        std::condition_variable run_cv;
+        // run_lock 适配 run_cv 的互斥锁
+        std::mutex run_lock;
 };
 
 #endif
