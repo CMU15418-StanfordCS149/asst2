@@ -286,6 +286,64 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    // 创建线程池
+    this->thread_num = num_threads;
+    this->thread_pool = new std::thread[this->thread_num];
+    // NOTE: 除了线程以外的成员变量必须在创建线程池之前初始化，否则 worker 可能会使用随机初始值执行一些指令
+    // 初始设置 stop 为 false
+    this->stop = false;
+    // 初始任务设置为 NULL，任务数量设置为 0, 正在工作的 workers = 0，活着的 workers = 0
+    this->runnable = nullptr;
+    this->num_total_tasks = 0;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
+    this->alive_workers.store(0, std::memory_order_relaxed);
+    // 分配 worker，worker != 任务，worker 可以持续执行不同的任务，直到用户决定停止
+    for (int i = 0; i < this->thread_num; i++) {
+        this->thread_pool[i] = std::thread([this, i]() {
+            worker(i);
+        });
+    }
+}
+
+void TaskSystemParallelThreadPoolSleeping::runThread(IRunnable *runnable, int task_id_start, int task_num, int num_total_tasks) {
+    for(int i = 0; i < task_num; i++) {
+        runnable->runTask(task_id_start + i, num_total_tasks);
+    }
+}
+
+void TaskSystemParallelThreadPoolSleeping::worker(int thread_id) {
+    // 活着的 workers + 1
+    this->alive_workers.fetch_add(1, std::memory_order_relaxed);
+    // 只要 stop 不为 true, worker 永不停止  
+    while(!this->stop) {
+        // NOTE: 这里 runnable 充当了一个 “开始键”
+        this->compare_lock.lock();
+        if(!this->runnable) {
+            this->compare_lock.unlock();
+            std::this_thread::yield(); // 让出 CPU 时间片，减少自旋等待
+            continue;
+        }
+        // 下面这个循环一直持续到把所有任务完成为止
+        while(this->finished_tasks_num < this->num_total_tasks) {
+            if(this->finished_tasks_num + this->num_working_workers >= this->num_total_tasks)
+                break;
+            int cur_task_id = this->finished_tasks_num + this->num_working_workers;
+            this->num_working_workers++;
+            assert(this->num_working_workers <= this->thread_num);
+            this->compare_lock.unlock();
+            runThread(this->runnable, cur_task_id, 1, this->num_total_tasks);
+            this->compare_lock.lock();
+            this->finished_tasks_num++;
+            this->num_working_workers--;
+        }
+        this->compare_lock.unlock();
+        std::this_thread::yield(); // 让出 CPU 时间片，减少自旋
+    }
+    // 活着的 workers - 1，若减少后为0，则唤醒析构函数线程
+    this->alive_workers.fetch_sub(1, std::memory_order_relaxed);
+    if(this->alive_workers.load(std::memory_order_relaxed) == 0)
+        this->stop_cv.notify_one();
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -295,20 +353,52 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    // 要退出，设置 stop 为 true 通知 worker 退出
+    this->stop = true;
+    // 使用条件变量睡眠，直到所有 workers 退出
+    std::unique_lock<std::mutex> lock(this->stop_lock);
+    this->stop_cv.wait(lock, [this] { return this->alive_workers.load(std::memory_order_relaxed) == 0; });
+    // join 必须放在这里，因为线程池实现中，run() 会被调用很多遍，而构造函数和析构函数可能只会被调用一遍
+    for (int i = 0; i < this->thread_num; i++) {
+        this->thread_pool[i].join();
+    }
+    // 销毁线程池
+    this->thread_num = -1;
+    delete[] this->thread_pool;
+    this->thread_pool = nullptr;
+    // 任务设置为空，任务数量设置为 0，正在工作的 workers = 0
+    this->runnable = nullptr;
+    this->num_total_tasks = 0;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
-
     //
     // TODO: CS149 students will modify the implementation of this
     // method in Parts A and B.  The implementation provided below runs all
     // tasks sequentially on the calling thread.
     //
+    // 初始化并行任务所需参数，包括正在工作的workers数目，任务函数 runnable，任务总量
+    // NOTE: run() 要等待 worker 执行完毕才可返回
+    this->compare_lock.lock();
+    this->num_total_tasks = num_total_tasks;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
+    this->runnable = runnable;
+    this->compare_lock.unlock();
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    while(this->finished_tasks_num < num_total_tasks) {
+        std::this_thread::yield(); // 让出 CPU 时间片，减少自旋等待
     }
+    assert(this->finished_tasks_num == num_total_tasks);
+    // 这次run结束后，重置任务设置为空，任务数量设置为 0，正在工作的 workers = 0
+    this->compare_lock.lock();
+    this->runnable = nullptr;
+    this->num_total_tasks = 0;
+    this->finished_tasks_num = 0;
+    this->num_working_workers = 0;
+    this->compare_lock.unlock();
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

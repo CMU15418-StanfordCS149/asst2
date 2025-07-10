@@ -6,6 +6,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -95,6 +96,31 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+        static void runThread(IRunnable *runnable, int task_id_start, int task_num, int num_total_tasks); 
+        void worker(int thread_id); 
+    private:
+        // 总线程数 (构造函数设置好，无需锁)
+        int thread_num;
+        // 线程池指针 (构造函数设置好，无需锁)
+        std::thread *thread_pool;
+        // 当前要执行的任务 (共享变量，但写稀少，读多次，一般不加同步)
+        IRunnable *runnable;
+        // 任务总量 (共享变量，但写稀少，读多次，一般不加同步)
+        int num_total_tasks;
+        // 正在工作的 workers
+        int num_working_workers;
+        // 已完成的任务量，这里使用 finished_tasks_num 而非 cur_task_id 的原因是：cur_task_id 无法表述已完成的任务数，在并行场景下无法让 run 判断何时该返回
+        int finished_tasks_num;
+        // 同步锁
+        std::mutex compare_lock;
+        // 表示是否要销毁线程，用于通知 worker 退出 (共享变量，但写两次，读多次，一般不用加同步)
+        bool stop;
+        // 活着的 worker 数量，供析构函数决定什么时候解除睡眠
+        std::atomic<int> alive_workers; 
+        // stop_cv 用于控制析构函数的条件变量
+        std::condition_variable stop_cv;
+        // stop_lock 适配 stop_cv 的互斥锁
+        std::mutex stop_lock;
 };
 
 #endif
