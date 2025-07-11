@@ -316,12 +316,14 @@ void TaskSystemParallelThreadPoolSleeping::worker(int thread_id) {
     // 活着的 workers + 1
     this->alive_workers.fetch_add(1, std::memory_order_relaxed);
     // 只要 stop 不为 true, worker 永不停止  
-    while(!this->stop) {
+    while(!this->stop.load(std::memory_order_relaxed)) {
         // 控制每次任务启动的锁
         std::unique_lock<std::mutex> lock(this->run_lock); 
         // runnable == nullptr 时陷入睡眠
-        this->run_cv.wait(lock, [this] { return this->runnable != nullptr || this->stop; });
-        if(this->stop) 
+        if(!this->runnable) {
+            continue;
+        }
+        if(this->stop.load(std::memory_order_relaxed)) 
             break;
         // 此时 runnable 已被赋值，可以干活了
         // 下面这个循环一直持续到把所有任务完成为止
@@ -338,14 +340,11 @@ void TaskSystemParallelThreadPoolSleeping::worker(int thread_id) {
             this->num_working_workers--;
         }
         assert(this->finished_tasks_num <= this->num_total_tasks);
-        if(this->finished_tasks_num < this->num_total_tasks) {
-            lock.unlock();
-        }
-        else {
+        if(this->finished_tasks_num == this->num_total_tasks) {
             this->runnable = nullptr;
-            lock.unlock();
-            this->run_cv.notify_all();
+            this->run_cv.notify_one(); // 唤醒主线程
         }
+        // unique_lock 自动解锁
     }
     // 活着的 workers - 1，若减少后为0，则唤醒析构函数线程
     this->alive_workers.fetch_sub(1, std::memory_order_relaxed);
@@ -362,10 +361,9 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // (requiring changes to tasksys.h).
     //
     // 要退出，设置 stop 为 true 通知 worker 退出
-    this->stop = true; 
+    this->stop.store(true, std::memory_order_relaxed);
     // 使用条件变量睡眠，直到所有 workers 退出; 进入睡眠前，把所有 workers 唤醒
     std::unique_lock<std::mutex> lock(this->run_lock);
-    this->run_cv.notify_all();
     this->run_cv.wait(lock, [this] { return this->alive_workers.load(std::memory_order_relaxed) == 0; });
     // join 必须放在这里，因为线程池实现中，run() 会被调用很多遍，而构造函数和析构函数可能只会被调用一遍
     for (int i = 0; i < this->thread_num; i++) {
@@ -395,8 +393,7 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     this->finished_tasks_num = 0;
     this->num_working_workers = 0;
     this->runnable = runnable;
-    // 设置完毕后通知 workers 干活，随后睡眠等待任务被完成
-    this->run_cv.notify_all();
+    // 等待 workers 完成任务
     this->run_cv.wait(lock, [this] { return this->finished_tasks_num == this->num_total_tasks; });
     // 重置任务设置为空，任务数量设置为 0，正在工作的 workers = 0
     this->runnable = nullptr;
