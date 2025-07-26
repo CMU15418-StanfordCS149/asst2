@@ -71,11 +71,16 @@ TaskSystemParallelSpawn::TaskSystemParallelSpawn(int num_threads): ITaskSystem(n
     //
     // 设置线程数
     this->thread_num = num_threads;
+    // 创建线程数组
+    this->thread_pool = new std::thread[this->thread_num];
 }
 
 TaskSystemParallelSpawn::~TaskSystemParallelSpawn() {
     // 重置线程数
     this->thread_num = -1;
+    // 销毁线程数组
+    delete[] this->thread_pool;
+    this->thread_pool = nullptr;
 }
 
 void TaskSystemParallelSpawn::runThread(IRunnable *runnable, int task_id_start, int task_num, int num_total_tasks) {
@@ -90,8 +95,6 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
     // method in Part A.  The implementation provided below runs all
     // tasks sequentially on the calling thread.
     //
-    // 创建线程池
-    this->thread_pool = new std::thread[this->thread_num];
     // 这里采用静态任务分配
     int k = 0;
     int task_per_thread = num_total_tasks / this->thread_num;
@@ -111,9 +114,6 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
     for (int i = 0; i < k; i++) {
         this->thread_pool[i].join();
     }
-    // 销毁线程池
-    delete[] this->thread_pool;
-    this->thread_pool = nullptr;
 }
 
 TaskID TaskSystemParallelSpawn::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
